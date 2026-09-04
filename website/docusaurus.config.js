@@ -1,4 +1,5 @@
 /* eslint-disable global-require */
+const path = require('path');
 const { externalLinkProcessor } = require('./tools/utils/externalLink');
 
 const packages = [
@@ -7,14 +8,19 @@ const packages = [
     'basic-crawler',
     'browser-crawler',
     'http-crawler',
+    'http-client',
     'cheerio-crawler',
     'puppeteer-crawler',
     'playwright-crawler',
     'jsdom-crawler',
     'linkedom-crawler',
-    'memory-storage',
+    'stagehand-crawler',
+    'fs-storage',
     'utils',
     'types',
+    'impit-client',
+    'got-scraping-client',
+    'otel',
 ];
 const packagesOrder = [
     '@crawlee/core',
@@ -23,13 +29,18 @@ const packagesOrder = [
     '@crawlee/puppeteer',
     '@crawlee/jsdom',
     '@crawlee/linkedom',
+    '@crawlee/stagehand',
     '@crawlee/basic',
     '@crawlee/http',
+    '@crawlee/http-client',
     '@crawlee/browser',
-    '@crawlee/memory-storage',
+    '@crawlee/fs-storage',
     '@crawlee/browser-pool',
     '@crawlee/utils',
     '@crawlee/types',
+    '@crawlee/impit-client',
+    '@crawlee/got-scraping-client',
+    '@crawlee/otel',
 ];
 
 /** @type {Partial<import('@docusaurus/types').DocusaurusConfig>} */
@@ -50,12 +61,31 @@ module.exports = {
         gaGtag: true,
         repoUrl: 'https://github.com/apify/crawlee',
     },
-    onBrokenLinks:
-    /** @type {import('@docusaurus/types').ReportingSeverity} */ ('throw'),
-    onBrokenMarkdownLinks:
-    /** @type {import('@docusaurus/types').ReportingSeverity} */ ('throw'),
+    onBrokenLinks: 'throw',
+    markdown: {
+        mermaid: true,
+        hooks: {
+            onBrokenMarkdownLinks: 'throw',
+        },
+    },
+    themes: [
+        '@docusaurus/theme-mermaid',
+    ],
     future: {
-        experimental_faster: true,
+        faster: {
+            // ssgWorkerThreads: true,
+            swcJsLoader: true,
+            swcJsMinimizer: true,
+            swcHtmlMinimizer: true,
+            lightningCssMinimizer: true,
+            rspackBundler: true,
+            mdxCrossCompilerCache: true,
+            rspackPersistentCache: true,
+        },
+        v4: {
+            removeLegacyPostBuildHeadAttribute: true,
+            useCssCascadeLayers: false,
+        },
     },
     presets: /** @type {import('@docusaurus/types').PresetConfig[]} */ ([
         [
@@ -66,10 +96,17 @@ module.exports = {
                     showLastUpdateAuthor: true,
                     showLastUpdateTime: true,
                     path: '../docs',
+                    exclude: ['**/node_modules/**'],
                     routeBasePath: 'js/docs',
                     sidebarPath: './sidebars.js',
                     rehypePlugins: [externalLinkProcessor],
                     disableVersioning: !!process.env.CRAWLEE_DOCS_FAST,
+                    versions: {
+                        // drop the label once 4.0.0 is stable and the 4.0 snapshot exists
+                        current: {
+                            label: '4.0 (RC)',
+                        },
+                    },
                     editUrl: (doc) => {
                         return `https://github.com/apify/crawlee/edit/master/website/${doc.versionDocsDirPath}/${doc.docPath}`;
                     },
@@ -142,6 +179,22 @@ module.exports = {
                         from: '/js/docs/guides/apify-platform',
                         to: '/js/docs/deployment/apify-platform',
                     },
+                    {
+                        from: '/js/docs/3.13/experiments/experiments-system-infomation-v2',
+                        to: '/js/docs/3.13/experiments/experiments-system-information-v2',
+                    },
+                    {
+                        from: '/js/docs/3.14/experiments/experiments-system-infomation-v2',
+                        to: '/js/docs/3.14/experiments/experiments-system-information-v2',
+                    },
+                    {
+                        from: '/js/docs/3.15/experiments/experiments-system-infomation-v2',
+                        to: '/js/docs/3.15/experiments/experiments-system-information-v2',
+                    },
+                    {
+                        from: '/js/docs/3.16/experiments/experiments-system-infomation-v2',
+                        to: '/js/docs/3.16/experiments/experiments-system-information-v2',
+                    },
                 ],
                 // createRedirects(existingPath) {
                 //     if (!existingPath.endsWith('/')) {
@@ -157,6 +210,30 @@ module.exports = {
             {
                 id: 'GTM-5P7MCS7',
             },
+        ],
+        [
+            '@signalwire/docusaurus-plugin-llms-txt',
+            {
+                enableDescriptions: false,
+                optionalLinks: [
+                    {
+                        title: 'Crawlee for Python llms.txt',
+                        url: 'https://crawlee.dev/python/llms.txt',
+                    },
+                    {
+                        title: 'Crawlee for Python llms-full.txt',
+                        url: 'https://crawlee.dev/python/llms-full.txt',
+                    }
+                ],
+                content: {
+                    excludeRoutes: ['/js/api/3.*/**', '/js/api/3.*', '/js/api/next/**', '/js/api/next'],
+                    includeVersionedDocs: true,
+                    enableLlmsFullTxt: true,
+                    includeBlog: true,
+                    includePages: true,
+                    relativePaths: false,
+                },
+            }
         ],
         async function runnableCodeBlock() {
             return {
@@ -209,6 +286,13 @@ module.exports = {
                 },
             };
         },
+        [
+            path.resolve(__dirname, 'src/plugins/docusaurus-plugin-segment'),
+            {
+                writeKey: process.env.SEGMENT_TOKEN,
+                allowedInDev: false,
+            },
+        ],
     ],
     themeConfig:
     /** @type {import('@docusaurus/preset-classic').ThemeConfig} */ ({
@@ -218,10 +302,6 @@ module.exports = {
                 hideable: true,
             },
         },
-        // announcementBar: {
-        //     id: `crawlee-for-python-webinar`,
-        //     content: `🎉️ <b><a href="https://crawlee.dev/python/">Crawlee for Python is open to early adopters!</a></b> 🥳️`,
-        // },
         navbar: {
             hideOnScroll: true,
             title: 'Crawlee',

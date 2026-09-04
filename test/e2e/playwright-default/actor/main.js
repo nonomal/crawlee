@@ -12,8 +12,8 @@ const mainOptions = {
 await Actor.main(async () => {
     const crawler = new PlaywrightCrawler({
         preNavigationHooks: [
-            (_ctx, goToOptions) => {
-                goToOptions.waitUntil = 'networkidle';
+            ({ gotoOptions }) => {
+                gotoOptions.waitUntil = 'networkidle';
             },
         ],
         async requestHandler({ page, enqueueLinks, request }) {
@@ -21,10 +21,10 @@ await Actor.main(async () => {
             const pageTitle = await page.title();
             await Dataset.pushData({ url, pageTitle });
             await enqueueLinks({
-                globs: ['**/3.0/examples/*'],
+                include: ['**/3.12/examples/*'],
             });
         },
     });
 
-    await crawler.run(['https://crawlee.dev/js/docs/3.0/examples/']);
+    await crawler.run(['https://crawlee.dev/js/docs/3.12/examples/']);
 }, mainOptions);

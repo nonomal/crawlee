@@ -1,4 +1,5 @@
 import { CheerioCrawler } from '@crawlee/cheerio';
+import { Statistics } from '@crawlee/core';
 import { sleep } from '@crawlee/utils';
 import { Actor } from 'apify';
 
@@ -22,9 +23,7 @@ await Actor.main(async () => {
     const crawler = new CheerioCrawler({
         requestHandlerTimeoutSecs: 2,
         maxRequestRetries: 0,
-        statisticsOptions: {
-            saveErrorSnapshots: true,
-        },
+        statistics: new Statistics({ saveErrorSnapshots: true }),
         async requestHandler({ $, request, log }) {
             const {
                 userData: { label },
@@ -58,6 +57,6 @@ await Actor.main(async () => {
     });
 
     await crawler.run(
-        Object.values(LABELS).map((label) => ({ url: 'https://example.com', userData: { label }, uniqueKey: label })),
+        Object.values(LABELS).map((label) => ({ url: 'https://crawlee.dev', userData: { label }, uniqueKey: label })),
     );
 }, mainOptions);

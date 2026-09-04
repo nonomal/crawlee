@@ -1,4 +1,4 @@
-import { CheerioCrawler, log, RequestQueueV1 } from '@crawlee/cheerio';
+import { CheerioCrawler, log, RequestQueue } from '@crawlee/cheerio';
 import { Actor } from 'apify';
 
 log.setLevel(log.LEVELS.DEBUG);
@@ -15,10 +15,10 @@ const mainOptions = {
 
 // RequestQueue auto-reset when stuck with requests in progress
 await Actor.main(async () => {
-    const requestQueue = await RequestQueueV1.open();
-    await requestQueue.addRequest({ url: 'https://example.com/?q=1' });
-    await requestQueue.addRequest({ url: 'https://example.com/?q=2' });
-    const r3 = await requestQueue.addRequest({ url: 'https://example.com/?q=3' });
+    const requestQueue = await RequestQueue.open();
+    await requestQueue.addRequest({ url: 'https://crawlee.dev/?q=1' });
+    await requestQueue.addRequest({ url: 'https://crawlee.dev/?q=2' });
+    const r3 = await requestQueue.addRequest({ url: 'https://crawlee.dev/?q=3' });
     // trigger 0 concurrency by marking one of the requests as already in progress
     requestQueue.inProgress.add(r3.requestId);
 

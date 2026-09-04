@@ -1,218 +1,129 @@
-import { Readable } from 'node:stream';
-import { ReadableStream } from 'node:stream/web';
-import { isTypedArray } from 'node:util/types';
+import type { CustomFetchOptions } from '@crawlee/http-client';
+import { BaseHttpClient, ResponseWithUrl } from '@crawlee/http-client';
+import type { CrawleeLogger, SessionFingerprint } from '@crawlee/types';
+import { Impit, type Browser as ImpitBrowser, type ImpitOptions } from 'impit';
+import type { CookieJar as ToughCookieJar } from 'tough-cookie';
 
-import type { BaseHttpClient, HttpRequest, HttpResponse, ResponseTypes, StreamingHttpResponse } from '@crawlee/core';
-import { type HttpMethod, Impit, type ImpitOptions, type ImpitResponse } from 'impit';
+import { LruCache } from '@apify/datastructures';
 
-export { Browser } from 'impit';
+// Concrete impit impersonation profiles per browser family. The plain `chrome` /
+// `firefox` aliases fall back to the oldest available version, which is a
+// fingerprint giveaway — we pick one of these explicitly instead. Keep in sync
+// with impit's `Browser` type when bumping the dependency.
+const IMPIT_VERSIONS_BY_BROWSER: Partial<Record<NonNullable<SessionFingerprint['browser']>, ImpitBrowser[]>> = {
+    chrome: [
+        'chrome100',
+        'chrome101',
+        'chrome104',
+        'chrome107',
+        'chrome110',
+        'chrome116',
+        'chrome124',
+        'chrome125',
+        'chrome131',
+        'chrome136',
+        'chrome142',
+    ],
+    firefox: ['firefox128', 'firefox133', 'firefox135', 'firefox144'],
+};
 
-interface ResponseWithRedirects {
-    response: ImpitResponse;
-    redirectUrls: URL[];
-}
+export const Browser = {
+    'Chrome': 'chrome',
+    'Firefox': 'firefox',
+} as const;
 
 /**
- * A HTTP client implementation based on the `impit library.
+ * A HTTP client implementation based on the `impit` library.
  */
-export class ImpitHttpClient implements BaseHttpClient {
-    private impitOptions: ImpitOptions;
-    private maxRedirects: number;
-    private followRedirects: boolean;
+export class ImpitHttpClient extends BaseHttpClient {
+    #impitOptions: ImpitOptions;
+    #cacheClients: boolean;
 
-    constructor(options?: Omit<ImpitOptions, 'proxyUrl'> & { maxRedirects?: number }) {
-        this.impitOptions = options ?? {};
+    /**
+     * Enables reuse of `impit` clients for the same set of options.
+     * This is useful for performance reasons, as creating
+     * a new client for each request breaks TCP connection
+     * (and other resources) reuse.
+     */
+    #clientCache: LruCache<{ client: Impit; cookieJar: ToughCookieJar }> = new LruCache({ maxLength: 10 });
 
-        this.maxRedirects = options?.maxRedirects ?? 10;
-        this.followRedirects = options?.followRedirects ?? true;
+    /**
+     * Stable impit impersonation version per fingerprint object, so the same
+     * session keeps impersonating the same browser version across requests
+     * instead of rerolling on every call.
+     */
+    #impitBrowserByFingerprint = new WeakMap<SessionFingerprint, ImpitBrowser>();
+
+    private getClient(options: ImpitOptions): Impit {
+        if (!this.#cacheClients) {
+            return new Impit(options);
+        }
+
+        const { cookieJar, ...rest } = options;
+
+        const cacheKey = JSON.stringify(rest);
+        const existingClient = this.#clientCache.get(cacheKey);
+
+        if (existingClient && (!cookieJar || existingClient.cookieJar === cookieJar)) {
+            return existingClient.client;
+        }
+
+        const client = new Impit(options);
+        this.#clientCache.add(cacheKey, { client, cookieJar: cookieJar as ToughCookieJar });
+
+        return client;
     }
 
     /**
-     * Converts the body of a `HttpRequest` to a format that can be passed to `impit`.
+     * @param options.cacheClients Whether to cache `impit` clients between requests. Defaults to `true`.
      */
-    private async intoImpitBody<TResponseType extends keyof ResponseTypes>(
-        body: Exclude<HttpRequest<TResponseType>['body'], undefined>,
-    ): Promise<string | Uint8Array> {
-        if (typeof body === 'string' || isTypedArray(body)) {
-            return body;
-        }
+    constructor(
+        options?: Omit<ImpitOptions, 'proxyUrl' | 'timeout'> & { cacheClients?: boolean; logger?: CrawleeLogger },
+    ) {
+        super({ logger: options?.logger });
+        const { cacheClients = true, logger: _logger, ...impitOptions } = options ?? {};
 
-        if (body instanceof ReadableStream) {
-            const reader = body.getReader();
-            const buffer = new Uint8Array();
-
-            while (true) {
-                const { done, value } = await reader.read();
-
-                if (done) return buffer;
-
-                buffer.set(value, buffer.length);
-            }
-        }
-
-        throw new Error('Unsupported body type.');
-    }
-
-    /**
-     * Flattens the headers of a `HttpRequest` to a format that can be passed to `impit`.
-     * @param headers `SimpleHeaders` object
-     * @returns `Record<string, string>` object
-     */
-    private flattenHeaders<TResponseType extends keyof ResponseTypes>(
-        headers: Exclude<HttpRequest<TResponseType>['headers'], undefined>,
-    ): Record<string, string> {
-        const result: Record<string, string> = {};
-
-        for (const headerName of Object.keys(headers)) {
-            const headerValue = headers[headerName];
-
-            if (headerValue === undefined) continue;
-
-            if (Array.isArray(headerValue)) {
-                result[headerName] = headerValue[0];
-                continue;
-            }
-
-            result[headerName] = headerValue;
-        }
-
-        return result;
-    }
-
-    /**
-     * Common implementation for `sendRequest` and `stream` methods.
-     * @param request `HttpRequest` object
-     * @returns `HttpResponse` object
-     */
-    private async getResponse<TResponseType extends keyof ResponseTypes>(
-        request: HttpRequest<TResponseType>,
-        redirects?: {
-            redirectCount?: number;
-            redirectUrls?: URL[];
-        },
-    ): Promise<ResponseWithRedirects> {
-        if ((redirects?.redirectCount ?? 0) > this.maxRedirects) {
-            throw new Error(`Too many redirects, maximum is ${this.maxRedirects}.`);
-        }
-
-        const url = typeof request.url === 'string' ? request.url : request.url.href;
-        const headers = request.headers !== undefined ? this.flattenHeaders(request.headers) : undefined;
-        const body = request.body !== undefined ? await this.intoImpitBody(request.body) : undefined;
-
-        const impit = new Impit({
-            ...this.impitOptions,
-            proxyUrl: request.proxyUrl,
-            followRedirects: false,
-        });
-
-        const response = await impit.fetch(url, {
-            method: request.method as HttpMethod,
-            headers,
-            body: body as string,
-        });
-
-        if (this.followRedirects && response.status >= 300 && response.status < 400) {
-            const { location } = response.headers;
-
-            if (!location) {
-                throw new Error('Redirect response missing location header.');
-            }
-
-            return this.getResponse(
-                {
-                    ...request,
-                    url: location,
-                },
-                {
-                    redirectCount: (redirects?.redirectCount ?? 0) + 1,
-                    redirectUrls: [...(redirects?.redirectUrls ?? []), new URL(location)],
-                },
-            );
-        }
-
-        return {
-            response,
-            redirectUrls: redirects?.redirectUrls ?? [],
-        };
+        this.#impitOptions = impitOptions;
+        this.#cacheClients = cacheClients;
     }
 
     /**
      * @inheritDoc
      */
-    async sendRequest<TResponseType extends keyof ResponseTypes>(
-        request: HttpRequest<TResponseType>,
-    ): Promise<HttpResponse<TResponseType>> {
-        const { response, redirectUrls } = await this.getResponse(request);
+    async fetch(request: Request, options?: RequestInit & CustomFetchOptions): Promise<Response> {
+        const { proxyUrl, redirect, signal, fingerprint, ignoreTlsErrors } = options ?? {};
 
-        let responseBody;
+        const impitBrowser = this.resolveImpitBrowser(fingerprint);
 
-        switch (request.responseType) {
-            case 'text':
-                responseBody = await response.text();
-                break;
-            case 'json':
-                responseBody = await response.json();
-                break;
-            case 'buffer':
-                responseBody = await response.bytes();
-                break;
-            default:
-                throw new Error('Unsupported response type.');
-        }
-
-        return {
-            headers: response.headers,
-            statusCode: response.status,
-            url: response.url,
-            request,
-            redirectUrls,
-            trailers: {},
-            body: responseBody,
-            complete: true,
-        };
-    }
-
-    private getStreamWithProgress(
-        response: ImpitResponse,
-    ): [Readable, () => { percent: number; transferred: number; total: number }] {
-        const responseStream = Readable.fromWeb(response.body as ReadableStream<any>);
-        let transferred = 0;
-        const total = Number(response.headers['content-length'] ?? 0);
-        responseStream.on('data', (chunk) => {
-            transferred += chunk.length;
+        const impit = this.getClient({
+            ...this.#impitOptions,
+            ...(impitBrowser ? { browser: impitBrowser } : {}),
+            // The per-request flag (from the crawler option or a MITM proxy session)
+            // can only enable ignoring, never override a constructor-level `true`.
+            ...(ignoreTlsErrors ? { ignoreTlsErrors: true } : {}),
+            proxyUrl,
+            followRedirects: redirect === 'follow',
         });
 
-        const getDownloadProgress = () => {
-            return {
-                percent: Math.round((transferred / total) * 100),
-                transferred,
-                total,
-            };
-        };
+        const response = await impit.fetch(request, { signal: signal ?? undefined });
 
-        return [responseStream, getDownloadProgress];
+        // todo - cast shouldn't be needed here, impit returns `Uint8Array`
+        return new ResponseWithUrl(response.body, response);
     }
 
-    /**
-     * @inheritDoc
-     */
-    async stream(request: HttpRequest): Promise<StreamingHttpResponse> {
-        const { response, redirectUrls } = await this.getResponse(request);
-        const [stream, getDownloadProgress] = this.getStreamWithProgress(response);
+    private resolveImpitBrowser(fingerprint?: SessionFingerprint): ImpitBrowser | undefined {
+        if (!fingerprint?.browser) return undefined;
 
-        return {
-            request,
-            url: response.url,
-            statusCode: response.status,
-            stream,
-            complete: true,
-            get downloadProgress() {
-                return getDownloadProgress();
-            },
-            uploadProgress: { percent: 100, transferred: 0 },
-            redirectUrls,
-            headers: response.headers,
-            trailers: {},
-        };
+        const cached = this.#impitBrowserByFingerprint.get(fingerprint);
+        if (cached) return cached;
+
+        // impit can only impersonate Chrome and Firefox. Map other (Chromium-based or
+        // unsupported) families like `edge`/`safari` onto Chrome so the request still
+        // carries realistic browser headers instead of impit's bare `*/*` defaults.
+        const versions = IMPIT_VERSIONS_BY_BROWSER[fingerprint.browser] ?? IMPIT_VERSIONS_BY_BROWSER.chrome!;
+
+        const picked = versions[Math.floor(Math.random() * versions.length)];
+        this.#impitBrowserByFingerprint.set(fingerprint, picked);
+        return picked;
     }
 }
